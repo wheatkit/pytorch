@@ -4,6 +4,16 @@
 
 namespace torch{
 namespace jit{
+template <typename dtype> // int64_t, bool, double
+void ListConstructFunc(int64_t num_inputs, Stack& stack) {
+  auto inputs = peekSlice(stack, 0, num_inputs, num_inputs);
+  c10::List<dtype> vals =
+      c10::impl::toList(fmap(inputs, [](const IValue& v) {
+        return v.to<dtype>(); }));
+  drop(stack, num_inputs);
+  push(stack, std::move(vals));
+}
+
 namespace mobile {
 InterpreterState::InterpreterState(const Bytecode& bytecode)
     : instructions_(bytecode.instructions_),
@@ -67,6 +77,15 @@ bool InterpreterState::run(Stack& stack) {
       case GET_ATTR: {
         auto userObj = pop(stack).toObject();
         auto value = userObj->getSlot(inst.X);
+        if (value.isObject()) {
+          auto obj = value.toObject();
+          std::cout << "obj : " << obj->name() << ", "
+                    << obj->slots().size() << " slots."
+                    << std::endl;
+        } else if (value.isTensor()) {
+          auto tensor = value.toTensor();
+          std::cout << "tensor with dim " << tensor.dim() << std::endl;
+        }
         push(stack, std::move(value));
         ++pc;
       } break;
@@ -74,6 +93,34 @@ bool InterpreterState::run(Stack& stack) {
         auto v = pop(stack);
         auto userObj = pop(stack).toObject();
         userObj->setSlot(inst.X, std::move(v));
+        ++pc;
+      } break;
+      case LIST_CONSTRUCT: {
+        if (inst.N == 1) {
+          ListConstructFunc<int64_t>(inst.X, stack);
+        } else if (inst.N == 2) {
+          ListConstructFunc<double>(inst.X, stack);
+        } else if (inst.N == 3) {
+          ListConstructFunc<bool>(inst.X, stack);
+        } else if (inst.N == 4) {
+          const size_t stack_size = stack.size();
+          c10::List<at::Tensor> vals;
+          vals.reserve(inst.X);
+          for (size_t i = stack_size - inst.X; i < stack_size; ++i) {
+            vals.emplace_back(std::move(stack[i]).toTensor());
+          }
+          drop(stack, inst.X);
+          push(stack, std::move(vals));
+        } else {
+          const size_t stack_size = stack.size();
+          auto vals = c10::impl::GenericList(c10::AnyType::get());
+          vals.reserve(inst.X);
+          for (size_t i = stack_size - inst.X; i < stack_size; ++i) {
+            vals.emplace_back(std::move(stack[i]));
+          }
+          drop(stack, inst.X);
+          push(stack, std::move(vals));
+        }
         ++pc;
       } break;
       case JF:
