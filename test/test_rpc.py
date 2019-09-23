@@ -15,16 +15,67 @@ from torch.distributed.rpc import RpcBackend
 from common_distributed import MultiProcessTestCase
 from common_utils import load_tests, run_tests, TEST_WITH_ASAN
 from os import getenv
+from typing import (
+    Dict,
+    Sequence,
+)
+from collections import namedtuple
 
 BACKEND = getenv('RPC_BACKEND', RpcBackend.PROCESS_GROUP)
 RPC_INIT_URL = getenv('RPC_INIT_URL', '')
 
-# it is used to test python user defined function over rpc
+
+# classes and functions are used to test python user defined class and
+# methods over rpc
+TensorClass = namedtuple("TensorClass", ["tensors"])
+
+def build_complex_tensors():
+    a = torch.ones(3, 3)
+    b = [a, a]
+    c = [b, b]
+    d = [a, b]
+    e = {a : d}
+    return [a, b, c, d, e]
+
+
+class MyClass:
+    def __init__(self, a):
+        self.a = a
+
+    def my_instance_method(self, b):
+        return self.a + b
+
+    @classmethod
+    def my_class_method(cls, d, e):
+        return d + e
+
+    @staticmethod
+    def my_static_method(f : int):
+        return f > 10
+
+
 def my_function(a, b, c):
     return a + b + c
 
 
-# it is used to test python user defined function over rpc
+def my_tensor_function(a : torch.Tensor, b : torch.Tensor) -> torch.Tensor:
+    return a + b
+
+
+def my_complex_tensor_function(
+    list_input : Sequence[torch.Tensor],
+    tensor_class_input : TensorClass,
+    dict_input : Dict[str, torch.Tensor]
+) -> torch.Tensor:
+    res = list_input[0]
+    for t in list_input:
+        res += t
+    for k, v in dict_input.items():
+        res += v
+    complex_tensors = tensor_class_input.tensors
+    return (res, complex_tensors[0], complex_tensors[1], complex_tensors[2])
+
+
 def no_result():
     print("do nothing")
 
@@ -37,33 +88,15 @@ def light_rpc():
     return 0
 
 
-def heavy_rpc(tensor):
+def heavy_rpc(tensor : torch.Tensor):
     for i in range(1, 100):
         tensor *= i
         tensor /= i + 1
     return 0
 
 
-# it is used to test python user defined function over rpc
 def raise_func():
     raise ValueError("Expected error")
-
-
-# it is used to test python user defined class and methods over rpc
-class my_class:
-    def __init__(self, a):
-        self.a = a
-
-    def my_instance_method(self, b):
-        return self.a + b
-
-    @classmethod
-    def my_class_method(cls, d, e):
-        return d + e
-
-    @staticmethod
-    def my_static_method(f):
-        return f > 10
 
 
 # load_tests from common_utils is used to automatically filter tests for
@@ -303,7 +336,7 @@ class RpcTest(MultiProcessTestCase):
     def test_py_class_constructor(self):
         n = self.rank + 1
         dst_rank = n % self.world_size
-        ret = dist.rpc("worker{}".format(dst_rank), my_class, args=(n,))
+        ret = dist.rpc("worker{}".format(dst_rank), MyClass, args=(n,))
         self.assertEqual(ret.a, n)
 
     @_wrap_with_rpc
@@ -311,27 +344,27 @@ class RpcTest(MultiProcessTestCase):
         n = self.rank + 1
         dst_rank = n % self.world_size
         ret = dist.rpc(
-            "worker{}".format(dst_rank), my_class(2).my_instance_method, args=(n,)
+            "worker{}".format(dst_rank), MyClass(2).my_instance_method, args=(n,)
         )
-        self.assertEqual(ret, my_class(2).my_instance_method(n))
+        self.assertEqual(ret, MyClass(2).my_instance_method(n))
 
     @_wrap_with_rpc
     def test_py_class_method(self):
         n = self.rank + 1
         dst_rank = n % self.world_size
         ret = dist.rpc(
-            "worker{}".format(dst_rank), my_class.my_class_method, args=(n, n + 1)
+            "worker{}".format(dst_rank), MyClass.my_class_method, args=(n, n + 1)
         )
-        self.assertEqual(ret, my_class.my_class_method(n, n + 1))
+        self.assertEqual(ret, MyClass.my_class_method(n, n + 1))
 
     @_wrap_with_rpc
     def test_py_class_static_method(self):
         n = self.rank + 1
         dst_rank = n % self.world_size
         ret = dist.rpc(
-            "worker{}".format(dst_rank), my_class.my_static_method, args=(n + 10,)
+            "worker{}".format(dst_rank), MyClass.my_static_method, args=(n + 10,)
         )
-        self.assertEqual(ret, my_class.my_static_method(n + 10))
+        self.assertEqual(ret, MyClass.my_static_method(n + 10))
 
     @_wrap_with_rpc
     def test_py_multi_async_call(self):
@@ -339,14 +372,14 @@ class RpcTest(MultiProcessTestCase):
         dst_rank = n % self.world_size
         dst_worker_id = dist.get_worker_id('worker{}'.format(dst_rank))
         fut1 = dist.rpc(dst_worker_id,
-                        my_class.my_static_method,
+                        MyClass.my_static_method,
                         args=(n + 10,),
                         async_call=True)
         fut2 = dist.rpc(dst_worker_id,
                         min,
                         args=(n, n + 1, n + 2),
                         async_call=True)
-        self.assertEqual(fut1.wait(), my_class.my_static_method(n + 10))
+        self.assertEqual(fut1.wait(), MyClass.my_static_method(n + 10))
         self.assertEqual(fut2.wait(), min(n, n + 1, n + 2))
 
     @_wrap_with_rpc
@@ -355,6 +388,48 @@ class RpcTest(MultiProcessTestCase):
         dst_rank = n % self.world_size
         ret = dist.rpc("worker{}".format(dst_rank), no_result)
         self.assertEqual(ret, no_result())
+
+    @_wrap_with_rpc
+    def test_py_tensors(self):
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+        ret = dist.rpc("worker{}".format(dst_rank),
+                       my_tensor_function,
+                       args=(torch.ones(n, n), torch.ones(n, n)))
+        self.assertEqual(ret,
+                         my_tensor_function(torch.ones(n, n),
+                                            torch.ones(n, n)))
+
+    @_wrap_with_rpc
+    def test_py_tensors_multi_async_call(self):
+        futs = []
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+        for i in range(100):
+            fut = dist.rpc("worker{}".format(dst_rank),
+                           my_tensor_function,
+                           args=(torch.ones(i, i), torch.ones(i, i)),
+                           async_call=True)
+            futs.append(fut)
+
+        j = 0
+        for fut in futs:
+            self.assertEqual(fut.wait(),
+                             my_tensor_function(torch.ones(j, j),
+                                                torch.ones(j, j)))
+            j += 1
+
+    @_wrap_with_rpc
+    def test_py_tensors_in_container(self):
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+        a = [torch.ones(n, n), torch.ones(n, n)]
+        b = TensorClass(build_complex_tensors())
+        c = {"foo": torch.ones(n, n), "bar": torch.ones(n, n)}
+        ret = dist.rpc("worker{}".format(dst_rank),
+                       my_complex_tensor_function,
+                       args=(a, b, c))
+        self.assertEqual(ret, my_complex_tensor_function(a, b, c))
 
     @_wrap_with_rpc
     def test_py_function_exception(self):
