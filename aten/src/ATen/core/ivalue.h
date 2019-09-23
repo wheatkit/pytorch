@@ -56,6 +56,7 @@ struct Object;
   _(Object) \
   _(Uninitialized) \
   _(Capsule) \
+  _(ScalarType) \
 
 
 struct CAFFE2_API IValue final {
@@ -186,6 +187,10 @@ struct CAFFE2_API IValue final {
   double toDouble() const {
     AT_ASSERT(isDouble());
     return payload.as_double;
+  }
+
+  IValue(ScalarType t) : tag(Tag::ScalarType), is_intrusive_ptr(false) {
+    payload.as_int = static_cast<std::underlying_type<ScalarType>::type>(t);
   }
 
   // Future
@@ -363,9 +368,13 @@ struct CAFFE2_API IValue final {
     return c10::Device(payload.as_device.type, payload.as_device.index);
   }
 
+  bool isScalarType() const {
+    return IValue().tag == Tag::ScalarType;
+  }
+
   // ScalarType
   at::ScalarType toScalarType() const {
-    return static_cast<at::ScalarType>(toInt());
+    return static_cast<at::ScalarType>(payload.as_int);
   }
 
   // Layout

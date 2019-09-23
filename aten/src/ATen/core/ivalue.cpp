@@ -66,6 +66,8 @@ TypePtr IValue::type() const {
       return CapsuleType::get();
     case Tag::Tuple:
       return toTuple()->type();
+    case Tag::ScalarType:
+      return ScalarTypeType::get();
   }
   // switch above is complete but this silences compiler warnings
   TORCH_INTERNAL_ASSERT(false, "unhandled case in IValue::type()");
@@ -167,6 +169,8 @@ std::ostream& operator<<(std::ostream & out, const IValue & v) {
       return out << "Uninitialized";
     case IValue::Tag::Device:
       return out << v.toDevice();
+    case IValue::Tag::ScalarType:
+      return out << v.toScalarType();
     case IValue::Tag::GenericDict:
       return printDict(out, v.toGenericDict());
     case IValue::Tag::Object:
